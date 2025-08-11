@@ -59,6 +59,14 @@ function addVoxel(pos) {
   cubes.push(cube)
 }
 
+function isPinching(landmarks) {
+  const dx = landmarks[8].x - landmarks[4].x;
+  const dy = landmarks[8].y - landmarks[4].y;
+  const dz = landmarks[8].z - landmarks[4].z;
+  const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+  return dist < 0.03; // Ajusta el umbral según pruebas
+}
+
 function updatePointerLine() {
   if (!fingerCursor.visible) {
     pointerLine.visible = false
