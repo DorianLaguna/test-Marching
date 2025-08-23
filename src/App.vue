@@ -47,6 +47,9 @@ let previewCube
 let handsDetector, cameraUtils
 let cursor, pointerLine
 let fingerCursor = null;
+let canPlace = true;
+let rightHandIndexFingerPos = null;
+let leftHandPinch = false;
 function toggleMode() {
   mode.value = mode.value === 'add' ? 'remove' : 'add'
 }
@@ -60,29 +63,12 @@ function addVoxel(pos) {
 }
 
 function isPinching(landmarks) {
+  // console.log(landmarks);
   const dx = landmarks[8].x - landmarks[4].x;
   const dy = landmarks[8].y - landmarks[4].y;
   const dz = landmarks[8].z - landmarks[4].z;
   const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
   return dist < 0.03; // Ajusta el umbral según pruebas
-}
-
-function updatePointerLine() {
-  if (!fingerCursor.visible) {
-    pointerLine.visible = false
-    return
-  }
-  pointerLine.visible = true
-  const positions = pointerLine.geometry.attributes.position.array
-  // start punto: cámara
-  positions[0] = camera.position.x
-  positions[1] = camera.position.y
-  positions[2] = camera.position.z
-  // end punto: cursor
-  positions[3] = fingerCursor.position.x
-  positions[4] = fingerCursor.position.y
-  positions[5] = fingerCursor.position.z
-  pointerLine.geometry.attributes.position.needsUpdate = true
 }
 
 onMounted(() => {
@@ -166,33 +152,83 @@ function onResize() {
   camera.updateProjectionMatrix()
   renderer.setSize(window.innerWidth, window.innerHeight)
 }
+function getPlacementPosition() {
+  raycaster.setFromCamera(mouse, camera);
+
+  // Intenta intersectar cubos primero
+  const intersects = raycaster.intersectObjects(cubes);
+
+  if (intersects.length > 0) {
+    const intersect = intersects[0];
+    const normal = intersect.face.normal.clone();
+    return intersect.object.position.clone().add(normal.multiplyScalar(voxelSize));
+  } else {
+    // Si no hay cubos, coloca en el plano suelo
+    const intersectPoint = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(groundPlane, intersectPoint)) {
+      return new THREE.Vector3(
+        Math.round(intersectPoint.x / voxelSize) * voxelSize,
+        0,
+        Math.round(intersectPoint.z / voxelSize) * voxelSize
+      );
+    }
+  }
+  return null; // No hay posición válida
+}
 
 function onHandsResults(results) {
-  const ctx = handCanvas.value.getContext('2d')
-  ctx.clearRect(0, 0, handCanvas.value.width, handCanvas.value.height)
-  ctx.drawImage(results.image, 0, 0, handCanvas.value.width, handCanvas.value.height)
+  const ctx = handCanvas.value.getContext('2d');
+  ctx.clearRect(0, 0, handCanvas.value.width, handCanvas.value.height);
+  ctx.drawImage(results.image, 0, 0, handCanvas.value.width, handCanvas.value.height);
 
-  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-    videoVisible.value = true
-    const indexFinger = results.multiHandLandmarks[0][8]
-    if (indexFinger && fingerCursor) {
-      // Invertir la X para corregir el espejo horizontal
-      mouse.x = 1 - indexFinger.x * 2; // en vez de indexFinger.x * 2 - 1
-      mouse.y = -(indexFinger.y * 2 - 1);
+  rightHandIndexFingerPos = null;
+  leftHandPinch = false;
 
-      raycaster.setFromCamera(mouse, camera)
-      const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0) // plano XZ a Y=0
-      const intersectPoint = new THREE.Vector3()
-      raycaster.ray.intersectPlane(plane, intersectPoint)
+  if (results.multiHandLandmarks && results.multiHandedness) {
+    for (let i = 0; i < results.multiHandLandmarks.length; i++) {
+      const landmarks = results.multiHandLandmarks[i];
+      let handedness = results.multiHandedness[i].label; // "Left" o "Right"
+      // invertir el etiquetado
+      if (handedness === "Right") handedness = "Left";
+      else if (handedness === "Left") handedness = "Right";
 
-      fingerCursor.position.copy(intersectPoint)
-      fingerCursor.visible = true
+      if (handedness === "Right") {
+        const indexFinger = landmarks[8];
+        rightHandIndexFingerPos = indexFinger;
+      }
+
+      if (handedness === "Left") {
+        if (isPinching(landmarks)) {
+          leftHandPinch = true;
+        }
+      }
     }
-  } else {
-    videoVisible.value = false
-    if (fingerCursor) fingerCursor.visible = false
   }
 
+  // Actualiza cursor con la mano derecha
+  if (rightHandIndexFingerPos) {
+    mouse.x = 1 - rightHandIndexFingerPos.x * 2; // espejo horizontal para que sea intuitivo
+    mouse.y = -(rightHandIndexFingerPos.y * 2 - 1);
+
+    raycaster.setFromCamera(mouse, camera);
+    const intersectPoint = new THREE.Vector3();
+    if (raycaster.ray.intersectPlane(groundPlane, intersectPoint)) {
+      fingerCursor.position.copy(intersectPoint);
+      fingerCursor.visible = true;
+    }
+  } else {
+    fingerCursor.visible = false;
+  }
+
+  // Si la mano izquierda hace pinch, coloca cubo en la posición apuntada por la derecha
+  if (leftHandPinch && rightHandIndexFingerPos && canPlace) {
+    const placePos = getPlacementPosition();
+    if (placePos) {
+      addVoxel(placePos);
+      canPlace = false;
+      setTimeout(() => { canPlace = true; }, 500);
+    }
+  }
 }
 
 function animate() {
